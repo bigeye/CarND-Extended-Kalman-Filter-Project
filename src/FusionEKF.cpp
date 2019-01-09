@@ -32,12 +32,15 @@ FusionEKF::FusionEKF() {
               0, 0.0009, 0,
               0, 0, 0.09;
 
-  /**
-   * TODO: Finish initializing the FusionEKF.
-   * TODO: Set the process and measurement noises
-   */
+  Qv_.resize(2, 2);
+  int noise_ax = 9;
+  int noise_ay = 9;
+  Qv_ << noise_ax, 0,
+      0, noise_ay;
 
-
+  H_.resize(2, 4);
+  H_ << 1, 0, 0, 0,
+        0, 1, 0, 0;
 }
 
 /**
@@ -50,25 +53,28 @@ void FusionEKF::ProcessMeasurement(const MeasurementPackage &measurement_pack) {
    * Initialization
    */
   if (!is_initialized_) {
-    /**
-     * TODO: Initialize the state ekf_.x_ with the first measurement.
-     * TODO: Create the covariance matrix.
-     * You'll need to convert radar from polar to cartesian coordinates.
-     */
-
     // first measurement
     cout << "EKF: " << endl;
     ekf_.x_ = VectorXd(4);
-    ekf_.x_ << 1, 1, 1, 1;
+    ekf_.P_ = MatrixXd(4, 4);
+    ekf_.P_ << 100, 0, 0, 0,
+        0, 100, 0, 0,
+        0, 0, 100, 0,
+        0, 0, 0, 100;
+    //ekf_.x_ << 1, 1, 1, 1;
 
     if (measurement_pack.sensor_type_ == MeasurementPackage::RADAR) {
-      // TODO: Convert radar from polar to cartesian coordinates 
-      //         and initialize state.
-
+      float rho = measurement_pack.raw_measurements_[0];
+      float phi = measurement_pack.raw_measurements_[1];
+      ekf_.x_ << rho * sin(phi),
+          rho * cos(phi),
+          0,
+          0;
+      previous_timestamp_ = measurement_pack.timestamp_;
     }
     else if (measurement_pack.sensor_type_ == MeasurementPackage::LASER) {
-      // TODO: Initialize state.
-
+      ekf_.x_ << measurement_pack.raw_measurements_[0], measurement_pack.raw_measurements_[1], 0, 0;
+      previous_timestamp_ = measurement_pack.timestamp_;
     }
 
     // done initializing, no need to predict or update
@@ -80,31 +86,58 @@ void FusionEKF::ProcessMeasurement(const MeasurementPackage &measurement_pack) {
    * Prediction
    */
 
-  /**
-   * TODO: Update the state transition matrix F according to the new elapsed time.
-   * Time is measured in seconds.
-   * TODO: Update the process noise covariance matrix.
-   * Use noise_ax = 9 and noise_ay = 9 for your Q matrix.
-   */
+  float time_delta = (measurement_pack.timestamp_ - previous_timestamp_) / 1000000.0;
+  previous_timestamp_ = measurement_pack.timestamp_;
+
+  MatrixXd F = MatrixXd::Identity(4, 4);
+  F(0, 2) = F(1, 3) = time_delta;
+
+  MatrixXd G(4, 2);
+  G << (time_delta * time_delta / 2.0), 0,
+      0, (time_delta * time_delta / 2.0),
+      time_delta, 0,
+      0, time_delta;
+
+  MatrixXd Q = G * Qv_ * G.transpose();
+
+  if (measurement_pack.sensor_type_ == MeasurementPackage::RADAR) {
+    ekf_.Init(ekf_.x_, ekf_.P_, F, H_, R_radar_, Q);
+  } else {
+    ekf_.Init(ekf_.x_, ekf_.P_, F, H_, R_laser_, Q);
+  }
 
   ekf_.Predict();
 
   /**
    * Update
    */
-
-  /**
-   * TODO:
-   * - Use the sensor type to perform the update step.
-   * - Update the state and covariance matrices.
-   */
-
   if (measurement_pack.sensor_type_ == MeasurementPackage::RADAR) {
-    // TODO: Radar updates
+    float px = ekf_.x_(0), py = ekf_.x_(1), vx = ekf_.x_(2), vy = ekf_.x_(3);
+    float px2py2 = px*px + py*py;
+    float px2py2sqrt = sqrt(px2py2);
+    MatrixXd H(3,4);
+    H.setZero();
+    if (px2py2 > 1e-7) {
+      H(0, 0) = px / px2py2sqrt;
+      H(0, 1) = py / px2py2sqrt;
+      H(1, 0) = - py / px2py2;
+      H(1, 1) = px / px2py2;
+      H(2, 0) = py * (vx * py - vy * px) / (px2py2 * px2py2sqrt);
+      H(2, 1) = px * (vy * px - vx * py) / (px2py2 * px2py2sqrt);
+      H(2, 2) = px / px2py2sqrt;
+      H(2, 3) = py / px2py2sqrt;
+    }
 
+    ekf_.H_ = H;
+    VectorXd z(3);
+    z << measurement_pack.raw_measurements_(0),
+        measurement_pack.raw_measurements_(1),
+        measurement_pack.raw_measurements_(2);
+    ekf_.UpdateEKF(z);
   } else {
-    // TODO: Laser updates
-
+    VectorXd z(2);
+    z << measurement_pack.raw_measurements_(0), measurement_pack.raw_measurements_(1);
+    ekf_.Update(z);
   }
 
   // print the output
